@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - manifest.json
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check release version
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(jq -r '.version' manifest.json)"
+          addon_id="$(jq -r '.browser_specific_settings.gecko.id' manifest.json)"
+          min_version="$(jq -r '.browser_specific_settings.gecko.strict_min_version' manifest.json)"
+          tag="v${version}"
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "addon_id=${addon_id}" >> "$GITHUB_OUTPUT"
+          echo "min_version=${min_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Lint, sign, and publish GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          if [[ -z "${WEB_EXT_API_KEY}" || -z "${WEB_EXT_API_SECRET}" ]]; then
+            echo "Missing WEB_EXT_API_KEY or WEB_EXT_API_SECRET repository secrets." >&2
+            exit 1
+          fi
+
+          version="${{ steps.check.outputs.version }}"
+          addon_id="${{ steps.check.outputs.addon_id }}"
+          min_version="${{ steps.check.outputs.min_version }}"
+          tag="${{ steps.check.outputs.tag }}"
+
+          stage="$(mktemp -d)"
+          artifacts="$(mktemp -d)"
+          trap 'rm -rf "$stage" "$artifacts"' EXIT
+
+          cp manifest.json background.js content.js popup.html popup.js icon.svg "$stage/"
+
+          npx --yes web-ext lint --self-hosted --source-dir "$stage"
+          npx --yes web-ext sign \
+            --source-dir "$stage" \
+            --artifacts-dir "$artifacts" \
+            --channel=unlisted
+
+          signed="$(find "$artifacts" -maxdepth 1 -name '*.xpi' -print -quit)"
+          if [[ -z "$signed" ]]; then
+            echo "No signed .xpi produced by web-ext sign." >&2
+            exit 1
+          fi
+
+          xpi_name="tab-volume-booster-${version}.xpi"
+          xpi_path="${artifacts}/${xpi_name}"
+          mv "$signed" "$xpi_path"
+
+          hash="sha256:$(sha256sum "$xpi_path" | awk '{print $1}')"
+          update_link="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${xpi_name}"
+
+          jq -n \
+            --arg id "$addon_id" \
+            --arg version "$version" \
+            --arg link "$update_link" \
+            --arg hash "$hash" \
+            --arg min_version "$min_version" \
+            '{
+              addons: {
+                ($id): {
+                  updates: [
+                    {
+                      version: $version,
+                      update_link: $link,
+                      update_hash: $hash,
+                      applications: {
+                        gecko: {
+                          strict_min_version: $min_version
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }' > "${artifacts}/updates.json"
+
+          gh release create "$tag" "$xpi_path" "${artifacts}/updates.json" \
+            --title "$tag" \
+            --generate-notes

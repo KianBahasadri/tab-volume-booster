@@ -6,12 +6,13 @@ The Firefox extension lives directly at the repository root so `manifest.json` c
 
 | File | Role |
 | --- | --- |
-| `manifest.json` | Firefox Manifest V3 definition (`strict_min_version: "142.0"`, `data_collection_permissions.required: ["none"]`). |
+| `manifest.json` | Firefox Manifest V3 definition (`strict_min_version: "142.0"`, `data_collection_permissions.required: ["none"]`, self-hosted `update_url` pointing at GitHub Releases `updates.json`). |
 | `background.js` | MV3 event page storing per-tab volume levels, updating the toolbar badge, routing messages, and injecting CORS headers on cross-origin media. |
 | `content.js` | Content script injected into all HTTP(S) frames (`all_frames: true`, `run_at: "document_idle"`) to discover players and route Web Audio. |
 | `popup.html` / `popup.js` | Native `action` popup UI and multi-frame status aggregator. |
 | `icon.svg` | Toolbar and add-on icon. |
-| `sign.sh` | Self-signing helper that opens an existing `web-ext-artifacts/*-<version>.xpi` in Firefox if the current `manifest.json` version is already signed; otherwise loads/prompts AMO credentials into gitignored `.env`, stages the 6 extension files in a temp directory, runs `npx web-ext sign --channel=unlisted`, and opens the signed `.xpi` in Firefox. |
+| `sign.sh` | Local self-signing helper that opens an existing `web-ext-artifacts/*-<version>.xpi` in Firefox if the current `manifest.json` version is already signed; otherwise loads/prompts AMO credentials into gitignored `.env`, stages the 6 extension files in a temp directory, runs `npx web-ext sign --channel=unlisted`, and opens the signed `.xpi` in Firefox. |
+| `.github/workflows/release.yml` | GitHub Actions workflow triggered when `manifest.json` changes on `main` (or `workflow_dispatch`). Skips if release `v<version>` already exists; otherwise lints, signs via AMO (`--channel=unlisted` using `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET` repo secrets), generates `updates.json` with SHA-256 `update_hash`, and publishes `tab-volume-booster-<version>.xpi` + `updates.json` to a GitHub Release so Firefox auto-updates via `update_url`. |
 
 ## Permissions
 
